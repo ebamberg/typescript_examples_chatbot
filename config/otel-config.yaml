@@ -1,0 +1,47 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+connectors:
+  # Derives RED metrics (calls, errors, duration histogram) straight from spans, keyed by
+  # span name (e.g. "management_agent", "call llm", "ChatRequest <model>",
+  # "execute tool call: <name>"). 
+  span_metrics:
+    histogram:
+      unit: s
+      # bare numbers get parsed as nanoseconds, producing meaningless nanosecond buckets, so we specify them in a more readable format.
+      explicit:
+        buckets: [50ms, 100ms, 250ms, 500ms, 1s, 2s, 3s, 5s, 8s, 13s, 21s, 34s, 55s, 89s, 144s]
+    dimensions:
+      - name: gen_ai.request.model
+        default: n/a
+    exemplars:
+      enabled: true
+    metrics_flush_interval: 10s
+
+exporters:
+  otlp_grpc:
+    endpoint: "tempo:4317"
+    tls:
+      insecure: true
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    enable_open_metrics: true
+
+processors:
+  batch:
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp_grpc, span_metrics]
+    metrics:
+      receivers: [otlp, span_metrics]
+      processors: [batch]
+      exporters: [prometheus]
