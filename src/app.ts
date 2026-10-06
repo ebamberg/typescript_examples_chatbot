@@ -3,14 +3,11 @@ import { initOpenTelemetry, shutdownOpenTelemetry, withTrace } from './observabi
 import {SimpleResponse} from './model';
 import { readFileSync} from 'fs';
 import { createInterface } from 'readline/promises';
+import { askForInput, displayAnswer } from './chatinterface/chatinterface';
 import { ToolDefinition } from './tools/tools';
 import { log } from './logger';
 
 const systemPrompt = readFileSync('src/prompts/system_prompt.md', 'utf8');
-
-async function askForInput(terminal: ReturnType<typeof createInterface>): Promise<string> {
-  return terminal.question('\nYou> ');
-}
 
 async function main() {
   initOpenTelemetry("knowledgebasereader","0.0.1");
@@ -40,7 +37,7 @@ async function main() {
 
       try {
         const response = await llm_execute(systemPrompt, normalizedMessage, "SimpleResponse", tools);
-        log.success("Chatbot", response.answer);
+        displayAnswer(response.answer);
       } catch (error) {
         log.error("Chatbot", "I couldn't get an answer. Please try again.", error);
       }
