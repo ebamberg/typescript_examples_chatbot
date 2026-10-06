@@ -1,17 +1,20 @@
-import {call_llm} from './openrouter'
 import { initOpenTelemetry, shutdownOpenTelemetry, withTrace } from './observability/otel';
 import {SimpleResponse} from './model';
 import { readFileSync} from 'fs';
 import { createInterface } from 'readline/promises';
 import { askForInput, displayAnswer } from './chatinterface/chatinterface';
+import { history, initialize_history } from './chathistory/chathistory';
+import { call_llm } from './openrouter';
 import { ToolDefinition } from './tools/tools';
 import { log } from './logger';
 
 const systemPrompt = readFileSync('src/prompts/system_prompt.md', 'utf8');
 
 async function main() {
-  initOpenTelemetry("knowledgebasereader","0.0.1");
     log.info("App", "starting typescript example.......");
+    
+  initOpenTelemetry("knowledgebasereader","0.0.1");
+  initialize_history(systemPrompt);
 
   const tools: ToolDefinition[] = [];
   const terminal = createInterface({ input: process.stdin, output: process.stdout });
@@ -36,7 +39,7 @@ async function main() {
       }
 
       try {
-        const response = await llm_execute(systemPrompt, normalizedMessage, "SimpleResponse", tools);
+        const response = await llm_execute(history, normalizedMessage, "SimpleResponse", tools);
         displayAnswer(response.answer);
       } catch (error) {
         log.error("Chatbot", "I couldn't get an answer. Please try again.", error);

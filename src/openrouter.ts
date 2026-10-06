@@ -3,10 +3,11 @@ import {OpenRouter} from '@openrouter/sdk';
 import { SendChatCompletionRequestResponse } from '@openrouter/sdk/models/operations';
 import * as TJS from "typescript-json-schema";
 import { resolve } from "path";
-import { ChatMessages, ChatResult, ChatToolCall, ChatToolMessage } from '@openrouter/sdk/models';
+import { ChatMessages, ChatToolCall, ChatToolMessage } from '@openrouter/sdk/models';
 import { ToolDefinition } from './tools/tools';
 import { withTrace, withTraceRequest } from './observability/otel';
 import { withRetryOnError } from './harness/harness';
+import { add_to_history, with_history_lock } from './chathistory/chathistory';
 import { log } from './logger';
 
 // const model = "openai/gpt-4o-mini"; // doesn't follows rules in the okf files+system prompt.
@@ -14,13 +15,11 @@ import { log } from './logger';
 const model = "google/gemini-3.5-flash"
 // const model = "qwen/qwen3.8-27b"; // doesn't work at all
 const TEMPERATURE = 0.1;
-const MAX_TURNS=20;
-
-
+const MAX_TURNS = 20;
 export const client = new OpenRouter({
   apiKey: process.env.OPENROUTER_API_KEY
 });
-const send_chat_request = withTrace("ChatRequest "+model, 
+export const send_chat_request = withTrace("ChatRequest "+model, 
                                 withRetryOnError(
                                     withTraceRequest(client.chat.send.bind(client.chat))
                                 )
@@ -53,87 +52,75 @@ export function generateJsonSchema(typename: string): TJS.Definition {
     }
 }
 
-export async function call_llm<Type>(systemprompt: string, prompt: string, output_typename: string, tools: Array<ToolDefinition> = []): Promise<Type> {
-    const my_schema = generateJsonSchema(output_typename);
+export async function call_llm<Type>(targetHistory: ChatMessages[], prompt: string, output_typename: string, tools: Array<ToolDefinition> = []): Promise<Type> {
+    return with_history_lock(targetHistory, async () => {
+        const my_schema = generateJsonSchema(output_typename);
+        const tools_schemas = tools.map((tool) => tool.schema);
+        let turns = 0;
 
-    let interrupted: boolean = false;
-    let turns: number = 0;
-    const tools_schemas = tools.map((t) => t.schema);
+        add_to_history({ role: 'user', content: prompt }, targetHistory);
 
-    let messages: ChatMessages[] = [
-        { role: "system", content: systemprompt },
-        { role: "user", content: prompt }
-    ];
-
-    while (!interrupted && turns < MAX_TURNS) {
-
-        const response: SendChatCompletionRequestResponse = await send_chat_request({
-            chatRequest: {
-                model: model,
-                messages: messages,
-                temperature: TEMPERATURE,
-                responseFormat: {
-                    type: "json_schema",
-                    jsonSchema: {
-                        name: output_typename,
-                        strict: true,
-                        schema: my_schema
-                    }
+        while (turns < MAX_TURNS) {
+            turns += 1;
+            const response: SendChatCompletionRequestResponse = await send_chat_request({
+                chatRequest: {
+                    model: model,
+                    messages: targetHistory,
+                    temperature: TEMPERATURE,
+                    responseFormat: {
+                        type: 'json_schema',
+                        jsonSchema: {
+                            name: output_typename,
+                            strict: true,
+                            schema: my_schema,
+                        },
+                    },
+                    tools: tools_schemas,
+                    toolChoice: 'auto',
                 },
-                tools: tools_schemas,
-                toolChoice: "auto", // Automatically choose a tool
-            },
-        });
-        if (!("choices" in response)) {
-            throw new LLMError("Expected a non-streaming chat completion response");
-        }
-        const response_message = response.choices[0].message;
+            });
 
-        messages.push(response_message);
-        const finishReason = response.choices[0].finishReason;
-        log.step("LLM", `response received — finish_reason: "${finishReason}"`);
-        if (finishReason == "tool_calls") {
-            const tool_calls = response_message.toolCalls;
-            if (tool_calls) {
-                for (const tool of tool_calls) {
+            if (!('choices' in response)) {
+                throw new LLMError('Expected a non-streaming chat completion response');
+            }
 
+            const responseMessage = response.choices[0].message;
+            add_to_history(responseMessage, targetHistory);
+
+            const finishReason = response.choices[0].finishReason;
+            log.step('LLM', `response received — finish_reason: "${finishReason}"`);
+            if (finishReason === 'tool_calls') {
+                for (const tool of responseMessage.toolCalls ?? []) {
                     try {
-                        const tool_executor = withTrace(`execute tool call: ${tool.function.name}`, execute_tool_call);
-                        const tool_response = tool_executor(tools, tool);
-                        messages.push(tool_response);
+                        const toolExecutor = withTrace(`execute tool call: ${tool.function.name}`, execute_tool_call);
+                        add_to_history(toolExecutor(tools, tool), targetHistory);
                     } catch (error) {
-                        log.error("LLM", `tool call "${tool.function.name}" failed:`, error);
-                        messages.push({
-                            role: "tool",
+                        log.error('LLM', `tool call "${tool.function.name}" failed:`, error);
+                        add_to_history({
+                            role: 'tool',
                             content: `Error while trying to call tool: ${error instanceof Error ? error.message : String(error)}`,
                             toolCallId: tool.id,
-                        });
+                        }, targetHistory);
                     }
                 }
+            } else if (finishReason === 'stop') {
+                if (typeof responseMessage.content !== 'string') {
+                    throw new LLMError('Expected the LLM response content to be a JSON string');
+                }
+                const parsedResponse = JSON.parse(responseMessage.content);
+                log.success('LLM', 'final answer:');
+                log.json(parsedResponse);
+                return parsedResponse;
+            } else {
+                throw new LLMError(`unhandled finishReason: ${finishReason}`);
             }
-
-        } else if (finishReason == "stop") {
-            if (typeof response_message.content !== "string") {
-                throw new LLMError("Expected the LLM response content to be a JSON string");
-            }
-            const parsedResponse = JSON.parse(response_message.content);
-            log.success("LLM", "final answer:");
-            log.json(parsedResponse);
-            return parsedResponse;
-        } else {
-            throw new LLMError(`unhandled finishReason: ${finishReason}`)
         }
-    }
-    if (turns >= MAX_TURNS) {
-        throw new LLMError("Max Turns reached");
-    } else if (interrupted) {
-        throw new LLMError("interrupted");
-    } else {
-        throw new LLMError("unexpected exit from LLM call turns");
-    }
+
+        throw new LLMError('Max Turns reached');
+    });
 }
 
-function execute_tool_call(available_tools: Array<ToolDefinition>, tool: ChatToolCall): ChatToolMessage {
+export function execute_tool_call(available_tools: Array<ToolDefinition>, tool: ChatToolCall): ChatToolMessage {
     if (tool.type == "function") {
         const tool_def = available_tools.find(t => tool.function.name == t.name);
         if (tool_def) {
