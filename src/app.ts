@@ -9,27 +9,11 @@ import { ToolDefinition } from './tools/tools';
 import { log } from './logger';
 
 const systemPrompt = readFileSync('src/prompts/system_prompt.md', 'utf8');
+const llm_execute = withTrace("chatbot llm", call_llm<SimpleResponse>);
+const tools: ToolDefinition[] = [];
+let interrupted =false;
 
-
-async function main() {
-    log.info("App", "starting typescript example.......");
-
-  initOpenTelemetry("knowledgebasereader","0.0.1");
-  initialize_history(systemPrompt);
-
-  const tools: ToolDefinition[] = [];
-  const terminal = createInterface({ input: process.stdin, output: process.stdout });
-  const llm_execute = withTrace("chatbot llm", call_llm<SimpleResponse>);
-
-  try {
-    log.info("Chatbot", "Ask me anything. Type 'quit' or 'exit' to stop.");
-
-    let interrupted =false;
-    while (!interrupted) {
-      let message: string;
-
-      await askForInput(terminal)
-        .then( message => {
+const handleUserInput = (message: string) => {
           const normalizedMessage = message.trim();
           if (["quit", "exit"].includes(normalizedMessage.toLowerCase())) {
             interrupted=true;
@@ -38,9 +22,29 @@ async function main() {
             return llm_execute(history, normalizedMessage, "SimpleResponse", tools);
           }
           
-      }).then( response => {
-          displayAnswer(response.answer);
-      }).catch( error=> log.error("Chatbot", "I couldn't get an answer. Please try again.", error) ) ;
+      };
+
+async function main() {
+    log.info("App", "starting typescript example.......");
+
+  initOpenTelemetry("knowledgebasereader","0.0.1");
+  initialize_history(systemPrompt);
+
+
+  const terminal = createInterface({ input: process.stdin, output: process.stdout });
+
+
+  try {
+    log.info("Chatbot", "Ask me anything. Type 'quit' or 'exit' to stop.");
+
+ 
+    while (!interrupted) {
+      let message: string;
+
+      await askForInput(terminal)
+        .then( handleUserInput )
+        .then( displayAnswer)
+        .catch( error=> log.error("Chatbot", "I couldn't get an answer. Please try again.", error) ) ;
     }
   } finally {
     terminal.close();
