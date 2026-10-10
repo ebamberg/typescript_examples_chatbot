@@ -2,7 +2,7 @@ import { initOpenTelemetry, shutdownOpenTelemetry, withTrace } from './observabi
 import {SimpleResponse} from './model';
 import { readFileSync} from 'fs';
 import { createInterface } from 'readline/promises';
-import { askForInput, displayAnswer } from './chatinterface/chatinterface';
+import { askForInput, displayAnswerAsSpeech } from './chatinterface/chatinterface';
 import { history, initialize_history } from './chathistory/chathistory';
 import { call_llm } from './openrouter';
 import { ToolDefinition } from './tools/tools';
@@ -17,7 +17,7 @@ const handleUserInput = (message: string) => {
           const normalizedMessage = message.trim();
           if (["quit", "exit"].includes(normalizedMessage.toLowerCase())) {
             interrupted=true;
-            return "bye bye";
+            return { answer: "bye bye" };
           } else {
             return llm_execute(history, normalizedMessage, "SimpleResponse", tools);
           }
@@ -43,7 +43,7 @@ async function main() {
 
       await askForInput(terminal)
         .then( handleUserInput )
-        .then( displayAnswer)
+        .then( displayAnswerAsSpeech)
         .catch( error=> log.error("Chatbot", "I couldn't get an answer. Please try again.", error) ) ;
     }
   } finally {
