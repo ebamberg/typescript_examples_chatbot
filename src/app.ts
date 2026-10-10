@@ -10,45 +10,41 @@ import { log } from './logger';
 
 const systemPrompt = readFileSync('src/prompts/system_prompt.md', 'utf8');
 
+
 async function main() {
     log.info("App", "starting typescript example.......");
-    
+
   initOpenTelemetry("knowledgebasereader","0.0.1");
   initialize_history(systemPrompt);
 
   const tools: ToolDefinition[] = [];
   const terminal = createInterface({ input: process.stdin, output: process.stdout });
-  const llm_execute = withTrace("call llm", call_llm<SimpleResponse>);
+  const llm_execute = withTrace("chatbot llm", call_llm<SimpleResponse>);
 
   try {
     log.info("Chatbot", "Ask me anything. Type 'quit' or 'exit' to stop.");
-    while (true) {
+
+    let interrupted =false;
+    while (!interrupted) {
       let message: string;
-      try {
-        message = await askForInput(terminal);
-      } catch {
-        break;
-      }
 
-      const normalizedMessage = message.trim();
-      if (["quit", "exit"].includes(normalizedMessage.toLowerCase())) {
-        break;
-      }
-      if (!normalizedMessage) {
-        continue;
-      }
-
-      try {
-        const response = await llm_execute(history, normalizedMessage, "SimpleResponse", tools);
-        displayAnswer(response.answer);
-      } catch (error) {
-        log.error("Chatbot", "I couldn't get an answer. Please try again.", error);
-      }
+      await askForInput(terminal)
+        .then( message => {
+          const normalizedMessage = message.trim();
+          if (["quit", "exit"].includes(normalizedMessage.toLowerCase())) {
+            interrupted=true;
+            return "bye bye";
+          } else {
+            return llm_execute(history, normalizedMessage, "SimpleResponse", tools);
+          }
+          
+      }).then( response => {
+          displayAnswer(response.answer);
+      }).catch( error=> log.error("Chatbot", "I couldn't get an answer. Please try again.", error) ) ;
     }
   } finally {
     terminal.close();
     log.info("Chatbot", "Goodbye.");
-    await shutdownOpenTelemetry();
     process.exit(0);
   }
 }
