@@ -6,11 +6,12 @@ import { askForInput, displayAnswerAsSpeech } from './chatinterface/chatinterfac
 import { history, initialize_history } from './chathistory/chathistory';
 import { call_llm } from './openrouter';
 import { ToolDefinition } from './tools/tools';
+import { current_date_time } from './tools/standard_tools';
 import { log } from './logger';
 
 const systemPrompt = readFileSync('src/prompts/system_prompt.md', 'utf8');
 const llm_execute = withTrace("chatbot llm", call_llm<SimpleResponse>);
-const tools: ToolDefinition[] = [];
+const tools: ToolDefinition[] = [current_date_time];
 let interrupted =false;
 
 const handleUserInput = (message: string) => {
