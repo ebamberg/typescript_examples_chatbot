@@ -4,7 +4,7 @@ import { readFileSync} from 'fs';
 import { createInterface } from 'readline/promises';
 import { askForInput, displayAnswerAsSpeech } from './chatinterface/chatinterface';
 import { history, initialize_history } from './chathistory/chathistory';
-import { call_llm } from './openrouter';
+import { call_llm, LLMResponse } from './openrouter';
 import { ToolDefinition } from './tools/tools';
 import { current_date_time } from './tools/standard_tools';
 import { log } from './logger';
@@ -14,16 +14,31 @@ const llm_execute = withTrace("chatbot llm", call_llm<SimpleResponse>);
 const tools: ToolDefinition[] = [current_date_time];
 let interrupted =false;
 
-const handleUserInput = (message: string) => {
+const handleUserInput = (message: string) : LLMResponse<SimpleResponse>=> {
           const normalizedMessage = message.trim();
           if (["quit", "exit"].includes(normalizedMessage.toLowerCase())) {
             interrupted=true;
-            return { answer: "bye bye" };
+            return { parsed: { answer: "bye bye" }, plannedToolExecutions: []}; 
           } else {
             return llm_execute(history, normalizedMessage, "SimpleResponse", tools);
           }
           
       };
+
+const waitForASyncToolExecutions = async ( response: LLMResponse<SimpleResponse> ) : Promise<LLMResponse<SimpleResponse>> => {
+  const executions= response.plannedToolExecutions as Array<Promise<void>>;
+  Promise.allSettled(executions)
+    .then(() => log.info("Chatbot", "All planned tool executions completed."))
+    .catch((error) => log.error("Chatbot", "Error during tool execution.", error));
+  return response;
+};
+
+const outputAnswer = async (response: LLMResponse<SimpleResponse>) : Promise<LLMResponse<SimpleResponse>> => {
+  displayAnswerAsSpeech(response.parsed);
+  return response;
+}
+
+
 
 async function main() {
     log.info("App", "starting typescript example.......");
@@ -44,7 +59,8 @@ async function main() {
 
       await askForInput(terminal)
         .then( handleUserInput )
-        .then( displayAnswerAsSpeech)
+        .then( outputAnswer )
+        .then( waitForASyncToolExecutions )
         .catch( error=> log.error("Chatbot", "I couldn't get an answer. Please try again.", error) ) ;
     }
   } finally {
@@ -58,3 +74,4 @@ main().catch((error: unknown) => {
   log.error("App", "Chatbot stopped unexpectedly.", error);
   process.exit(1);
 });
+

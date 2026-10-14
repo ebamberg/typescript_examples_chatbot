@@ -52,11 +52,17 @@ export function generateJsonSchema(typename: string): TJS.Definition {
     }
 }
 
-export async function call_llm<Type>(targetHistory: ChatMessages[], prompt: string, output_typename: string, tools: Array<ToolDefinition> = []): Promise<Type> {
+export interface LLMResponse<Type> {
+    parsed: Type;
+    plannedToolExecutions: Array<Promise<void>>;
+}
+
+export async function call_llm<Type>(targetHistory: ChatMessages[], prompt: string, output_typename: string, tools: Array<ToolDefinition> = []): Promise<LLMResponse<Type>> {
     return with_history_lock(targetHistory, async () => {
         const my_schema = generateJsonSchema(output_typename);
         const tools_schemas = tools.map((tool) => tool.schema);
         let turns = 0;
+        const plannedToolExecutions: Array<Promise<void>> = [];
 
         add_to_history({ role: 'user', content: prompt }, targetHistory);
 
@@ -93,7 +99,17 @@ export async function call_llm<Type>(targetHistory: ChatMessages[], prompt: stri
                 for (const tool of responseMessage.toolCalls ?? []) {
                     try {
                         const toolExecutor = withTrace(`execute tool call: ${tool.function.name}`, execute_tool_call);
-                        add_to_history(toolExecutor(tools, tool), targetHistory);
+                        const toolResponsePromise = toolExecutor(tools, tool)
+                                .then((toolResponse: ChatMessages) => {
+                                    add_to_history(toolResponse, targetHistory);
+                                });
+
+                        plannedToolExecutions.push(toolResponsePromise);
+                        add_to_history({                          
+                                role: "tool",
+                                content: JSON.stringify("started the tool "  + tool.function.name + " as a background task. Please continue with the conversation with the user in meanwhile until the result of the tool call is available.."),
+                                toolCallId: tool.id,
+                            } as ChatToolMessage, targetHistory);
                     } catch (error) {
                         log.error('LLM', `tool call "${tool.function.name}" failed:`, error);
                         add_to_history({
@@ -110,7 +126,10 @@ export async function call_llm<Type>(targetHistory: ChatMessages[], prompt: stri
                 const parsedResponse = JSON.parse(responseMessage.content);
                 log.success('LLM', 'final answer:');
                 log.json(parsedResponse);
-                return parsedResponse;
+                return {
+                    parsed: parsedResponse,
+                    plannedToolExecutions: plannedToolExecutions,
+                };
             } else {
                 throw new LLMError(`unhandled finishReason: ${finishReason}`);
             }
@@ -120,18 +139,20 @@ export async function call_llm<Type>(targetHistory: ChatMessages[], prompt: stri
     });
 }
 
-export function execute_tool_call(available_tools: Array<ToolDefinition>, tool: ChatToolCall): ChatToolMessage {
+export async function execute_tool_call(available_tools: Array<ToolDefinition>, tool: ChatToolCall): Promise<ChatToolMessage> {
     if (tool.type == "function") {
         const tool_def = available_tools.find(t => tool.function.name == t.name);
         if (tool_def) {
             const args = JSON.parse(tool.function.arguments);
             log.step("Tool", `executing "${tool.function.name}" with args: ${JSON.stringify(args)}`);
-            const result = tool_def.callback({ ...args });
-            return {
-                role: "tool",
-                content: JSON.stringify(result),
-                toolCallId: tool.id,
-            } as ChatToolMessage;
+            return tool_def.callback({ ...args })
+                        .then( result => (
+                            {
+                                role: "tool",
+                                content: JSON.stringify(result),
+                                toolCallId: tool.id,
+                            } as ChatToolMessage
+                        ));
         } else {
             throw new ToolCallError(`Error, there is no tool with the name: ${tool.function.name}`);
         }

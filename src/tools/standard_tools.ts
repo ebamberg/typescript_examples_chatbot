@@ -17,8 +17,7 @@ export const current_date_time: ToolDefinition = {
       },
     },
   },
-  callback: (knowledge_base: string, document_name: string ) : string | ChatContentItems[] => {
+  callback: async (): Promise<string> => {
       return JSON.stringify({ date: new Date().toISOString() });
-      
   }
 }
