@@ -15,7 +15,15 @@ export function displayAnswer(response: SimpleResponse): void {
   log.success('Chatbot', response.answer);
 }
 
-export async function displayAnswerAsSpeech(response: SimpleResponse): Promise<void> {
+let speechQueue: Promise<void> = Promise.resolve();
+
+export function displayAnswerAsSpeech(response: SimpleResponse): Promise<void> {
+  const playback = speechQueue.then(() => playAnswerAsSpeech(response));
+  speechQueue = playback.catch(() => {});
+  return playback;
+}
+
+async function playAnswerAsSpeech(response: SimpleResponse): Promise<void> {
   const audio = await client.tts.createSpeech({
     speechRequest: {
       model: 'google/gemini-3.8-flash-lite-tts',
@@ -42,7 +50,7 @@ export async function displayAnswerAsSpeech(response: SimpleResponse): Promise<v
       pipeline(Readable.fromWeb(audio as unknown as Parameters<typeof Readable.fromWeb>[0]), player.stdin),
       playback,
     ]);
-    log.success('Chatbot', 'Audio answer played.');
+ //   log.success('Chatbot', 'Audio answer played.');
   } catch (error) {
     player.kill();
     throw error;

@@ -64,7 +64,14 @@ export async function call_llm<Type>(targetHistory: ChatMessages[], prompt: stri
         let turns = 0;
         const plannedToolExecutions: Array<Promise<void>> = [];
 
-        add_to_history({ role: 'user', content: prompt }, targetHistory);
+        if (prompt.trim().length === 0) {
+            throw new LLMError("Prompt is empty");
+        } else if (prompt === 'TOOL_RESULTS_AVAILABLE') {
+            log.info("Chatbot", "Tool results are available now.");
+            add_to_history({ role: 'assistant', content: "new tool results available from background I can find them in the chat history. Analyse the chat history for unavailable information at a previous time and answer the users previous question based on the new information." }, targetHistory);
+        } else {
+            add_to_history({ role: 'user', content: prompt }, targetHistory);
+        }
 
         while (turns < MAX_TURNS) {
             turns += 1;
@@ -99,10 +106,10 @@ export async function call_llm<Type>(targetHistory: ChatMessages[], prompt: stri
                 for (const tool of responseMessage.toolCalls ?? []) {
                     try {
                         const toolExecutor = withTrace(`execute tool call: ${tool.function.name}`, execute_tool_call);
-                        const toolResponsePromise = toolExecutor(tools, tool)
-                                .then((toolResponse: ChatMessages) => {
-                                    add_to_history(toolResponse, targetHistory);
-                                });
+                        const toolResponsePromise = toolExecutor(tools, tool);
+//                                .then((toolResponse: ChatMessages) => {
+//                                    add_to_history(toolResponse, targetHistory);
+//                                });
 
                         plannedToolExecutions.push(toolResponsePromise);
                         add_to_history({                          
