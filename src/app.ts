@@ -3,7 +3,7 @@ import {SimpleResponse} from './model';
 import { readFileSync} from 'fs';
 import { createInterface, Interface } from 'readline/promises';
 import { askForInput, displayAnswerAsSpeech } from './chatinterface/chatinterface';
-import { history, initialize_history,add_to_history } from './chathistory/chathistory';
+import { history, initialize_history, add_to_history, with_history_lock } from './chathistory/chathistory';
 import { call_llm, LLMResponse } from './openrouter';
 import { ToolDefinition } from './tools/tools';
 import { current_date_time } from './tools/standard_tools';
@@ -27,7 +27,7 @@ const handleUserInput = (message: string) : LLMResponse<SimpleResponse> => {
         }  
       };
 
-const waitForASyncToolExecutions = async ( response: LLMResponse<SimpleResponse> ) : Promise<LLMResponse<SimpleResponse>> => {
+const collectAsyncToolExecutions = async ( response: LLMResponse<SimpleResponse> ): Promise<void> => {
 
   const isRejected = (input: PromiseSettledResult<unknown>): input is PromiseRejectedResult => 
     input.status === 'rejected'
@@ -39,26 +39,33 @@ const waitForASyncToolExecutions = async ( response: LLMResponse<SimpleResponse>
     const executions= response.plannedToolExecutions as Array<Promise<void>>;
     if (executions.length === 0) {
       log.info("Chatbot", "No planned tool executions to wait for.");
-      return response;
+      return;
     } else {
-      log.info("Chatbot", `Waiting for ${executions.length} planned tool executions to complete...`);
+      log.info("Chatbot", `Continuing the conversation while ${executions.length} tool execution(s) run in the background...`);
     
       const results = await Promise.allSettled(executions);
       const rejectedResults = results.filter(isRejected);
       const fulfilledResults = results.filter(isFulfilled);
-      fulfilledResults.forEach((result, index) => {
-        outstandingToolExecutionResult = true;
-        log.info("Chatbot", `Tool execution ${index + 1} completed successfully.`);
-        const toolResponse  = result.value as unknown as ChatMessages ;
-        add_to_history(toolResponse, history);
-        log.info("Chatbot", "All planned tool executions completed.");
+      rejectedResults.forEach((result) => {
+        log.error("Chatbot", "A background tool execution failed.", result.reason);
       });
+
+      await with_history_lock(history, async () => {
+        fulfilledResults.forEach((result, index) => {
+          log.info("Chatbot", `Tool execution ${index + 1} completed successfully.`);
+          const toolResponse = result.value as unknown as ChatMessages;
+          add_to_history(toolResponse, history);
+        });
+      });
+
+      if (fulfilledResults.length > 0) {
+        outstandingToolExecutionResult = true;
+        log.info("Chatbot", "Completed tool results are available in the chat history.");
+      }
     }
   } catch (error) {
     log.error("Chatbot", "Error occurred while waiting for tool executions.", error);
   }
-
-  return response;
 };
 
 const outputAnswer = async (response: LLMResponse<SimpleResponse>) : Promise<LLMResponse<SimpleResponse>> => {
@@ -98,7 +105,9 @@ async function main() {
       await receiveNextMessage(terminal)
         .then( handleUserInput )
         .then( outputAnswer )
-        .then( waitForASyncToolExecutions )
+        .then((response) => {
+          void collectAsyncToolExecutions(response);
+        })
         .catch( error=> log.error("Chatbot", "I couldn't get an answer. Please try again.", error) ) ;
     }
   } finally {

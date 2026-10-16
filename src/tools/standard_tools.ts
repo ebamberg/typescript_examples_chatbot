@@ -18,6 +18,7 @@ export const current_date_time: ToolDefinition = {
     },
   },
   callback: async (): Promise<string> => {
+      await new Promise((resolve) => setTimeout(resolve, 30000));
       return JSON.stringify({ date: new Date().toISOString() });
   }
 }
